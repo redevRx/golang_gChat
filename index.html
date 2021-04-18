@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta http-equiv="X-UA-Compatible" content="ie=edge" />
+    <title>Go WebSocket Tutorial</title>
+</head>
+<body>
+<h2>Hello World</h2>
+
+<script>
+    let socket = new WebSocket("ws://127.0.0.1:3000/ws");
+    console.log("Attempting Connection...");
+    //message type
+    const TypeMessage = "gchat-message"
+    const TypeRoom = "gchat-room"
+    const TypeJoinChannel = "gchat-join-channel"
+    const TypeCallOffer = "gchat-offer"
+    const TypeCallAnswer = "gchat-answer"
+    const TypeLeaveRoom = "gchat-leave-room"
+
+    socket.onopen = () => {
+        console.log("Successfully Connected");
+        socket.send(JSON.stringify({"room":"test","messageType":TypeRoom}))
+    };
+
+    socket.onclose = event => {
+        console.log("Socket Closed Connection: ", event);
+        socket.send("Client Closed!")
+    };
+
+    socket.onerror = error => {
+        console.log("Socket Error: ", error);
+    };
+    socket.onmessage = message =>{
+        console.log(message.data)
+    }
+
+    function A(){
+        socket.send(JSON.stringify({"message":"Hi B","messageType":TypeMessage ,"room":"test"}))
+    }
+    function B(){
+        socket.send(JSON.stringify({"message":"Hi A","messageType":TypeMessage,"room":"test"}))
+    }
+
+    function closeRoom(){
+        socket.send(JSON.stringify({"message":"Hi A","messageType":TypeLeaveRoom,"room":"test"}))
+    }
+
+</script>
+<button onclick="closeRoom()">CloseRoom</button>
+<button onclick="A()">SendMessageA</button>
+<button onclick="B()">SendMessageB</button>
+</body>
+</html>
