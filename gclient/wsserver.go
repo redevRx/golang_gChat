@@ -11,6 +11,8 @@ type WsServer struct {
 
 }
 
+//create Websocket Server and save clients  connection
+//room [] is List room name
 func OnNewWsServer() *WsServer{
 	return &WsServer{
 		clients: make(map[*Client]bool),

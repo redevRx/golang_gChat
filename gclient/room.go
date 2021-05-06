@@ -1,11 +1,14 @@
 package client
 
+import "log"
+
 type Room struct {
 	Name string
 	Clients map[*Client]bool
 	Register chan *Client
 	UnRegister chan *Client
 	OnMessage chan *Message
+	ListMessage chan [] *Message
 }
 
 func onNewRoom(name string) *Room{
@@ -15,6 +18,7 @@ func onNewRoom(name string) *Room{
 		Register: make(chan *Client),
 		UnRegister: make(chan *Client),
 		OnMessage: make(chan *Message),
+		ListMessage: make(chan [] *Message),
 	}
 }
 
@@ -44,6 +48,18 @@ func (r *Room) onRun(){
 			//un register room
 			r.onRoomUnRegister(room)
 			break
+		case message := <- r.ListMessage:
+			for client := range r.Clients{
+				select {
+				case client.listMessage <- message:
+					log.Print("get list message :")
+				default:
+					close(client.listMessage)
+					delete(r.Clients,client)
+					break
+				}
+			}
+			break
 		case message := <- r.OnMessage:
 			for client := range r.Clients{
 				select {
@@ -54,6 +70,7 @@ func (r *Room) onRun(){
 					break
 				}
 			}
+			break
 		}
 	}
 }

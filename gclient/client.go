@@ -1,10 +1,16 @@
 package client
 
 import (
+	"bytes"
 	"encoding/json"
+	"fmt"
 	"github.com/gorilla/websocket"
+	"image"
+	"image/jpeg"
 	"log"
+	"math/rand"
 	"net/http"
+	"os"
 	"time"
 )
 
@@ -41,15 +47,19 @@ type Client struct {
 	//Rooms map[*Room]bool
 	ws *WsServer
 	message chan []byte
+	listMessage chan []*Message
+	Db *DbConnect
 }
 
 
-func onNewClient(conn *websocket.Conn, ws *WsServer) *Client{
+func onNewClient(conn *websocket.Conn, ws *WsServer , db *DbConnect) *Client{
 	return &Client{
 		conn: conn,
 		//Rooms: make(map[*Room]bool),
 		ws: ws,
 		message: make(chan []byte),
+		Db: db,
+		listMessage: make(chan []*Message),
 	}
 }
 
@@ -79,6 +89,7 @@ func (c *Client) readPump() {
 		c.onJsonMessageCheck(message)
 	}
 }
+
 //
 // writePump pumps messages from the hub to the websocket connection.
 //
@@ -116,6 +127,24 @@ func (c *Client) writePump() {
 			if err := w.Close(); err != nil {
 				return
 			}
+			break
+		case message , ok := <- c.listMessage:
+			log.Println("start send list message :",message[0].Message)
+			c.conn.SetWriteDeadline(time.Now().Add(writeWait))
+			if !ok {
+				// The hub closed the channel.
+				c.conn.WriteMessage(websocket.CloseMessage, []byte{})
+				return
+			}
+			//encode
+			newmessage,err:= json.Marshal(message)
+			if err != nil{
+				log.Println(err)
+			}
+			if err := c.conn.WriteMessage(websocket.TextMessage,newmessage); err != nil{
+				log.Println("send list message error :",err)
+			}
+			break
 		case <-ticker.C:
 			c.conn.SetWriteDeadline(time.Now().Add(writeWait))
 			if err := c.conn.WriteMessage(websocket.PingMessage, nil); err != nil {
@@ -134,6 +163,12 @@ func (c *Client) onClientJointRoom(message *Message){
 		//not found room give new create room
 		room = c.ws.onCreateNewRoom(message.RoomName)
 	}
+	//keep room to database
+	err := c.Db.onKeepRoom(message.RoomName,message.UserName)
+	if err != nil{
+		log.Println("insert room name error :",err)
+	}
+
 	//register room
 	c.ws.Rooms[room] = 0 == 0
 	room.Register <- c
@@ -151,10 +186,78 @@ func (c *Client) onClientLeaveRoom(message *Message){
 		//if found remove it
 		delete(c.ws.Rooms , room)
 	}
+	err := c.Db.onUnRoom(message.UserName)
+	if err != nil{
+	log.Println("remove room name error :",err)
+	}
+
 	//unRegister room
 	room.UnRegister <- c
 }
 
+//check message item type
+//type text sicker video image
+func onCheckItemMessage(c *Client,message *Message){
+	switch message.ItemType {
+	case ItemTypeMessage:
+		log.Println("Type Message")
+		//jsonData = bytes.TrimSpace(bytes.Replace(jsonData, newline, space, -1))
+		//keep message in database
+		if err := c.Db.onKeepMessage(message,message.Message); err != nil{
+			log.Println("error keep message :",err)
+	}
+	//
+		if room := c.ws.onFindRoomName(message.RoomName); room != nil{
+			room.OnMessage <- message
+		}else {
+			log.Println("not room")
+		}
+		break
+	case ItemTypeImage:
+		log.Println("item is image")
+		img,_,err := image.Decode(bytes.NewReader(message.Image))
+		if err != nil{
+			log.Println("read image from byte error :",err)
+		}
+
+		b :=  make([]byte , 16)
+		if _ , err := rand.Read(b); err != nil{
+			log.Println(err)
+		}
+		imgName := fmt.Sprintf("%x-%x-%x-%x-%x",
+			b[0:4], b[4:6], b[6:8], b[8:10], b[10:])
+
+		out , err := os.Create("./"+imgName+".jpg")
+		defer out.Close()
+
+		var opts jpeg.Options
+		opts.Quality = 1
+		//
+		err = jpeg.Encode(out , img , &opts)
+		if err != nil{
+			log.Println("save error :",err)
+		}
+		//keep image path http://localhost:3000/file/+imgName+".jpg"
+		if err := c.Db.onKeepMessage(message,"http://localhost:3000/file/"+imgName+".jpg"); err != nil{
+			log.Println("save message err :",err)
+		}
+		//send message to other clients
+		if room := c.ws.onFindRoomName(message.RoomName); room != nil{
+			room.OnMessage <- message
+		}else {
+			log.Println("not room")
+		}
+		break
+	case ItemTypeVideo:
+		log.Println("item type is video")
+		break
+	case ItemTypeSticker:
+		log.Println("item type is Sticker")
+		break
+	default:
+		break
+	}
+}
 //decode json message
 //and check event from client
 func (c *Client)onJsonMessageCheck(jsonData []byte)  {
@@ -176,14 +279,22 @@ func (c *Client)onJsonMessageCheck(jsonData []byte)  {
 		//client leave from room
 		break
 	case TypeMessage:
-		log.Println("Type Message")
-		//jsonData = bytes.TrimSpace(bytes.Replace(jsonData, newline, space, -1))
+		go onCheckItemMessage(c,&data)
+		break
+	case TypeGetMessage:
+		log.Println("type get all message :",data.RoomName)
+		message,err := c.Db.getChat(data.RoomName)
+		if err != nil{
+			log.Println("get message :",err)
+		}
+		//for i :=range message{
+		//	log.Println(message[i])
+		//}
 		if room := c.ws.onFindRoomName(data.RoomName); room != nil{
-			room.OnMessage <- &data
+			room.ListMessage <- message
 		}else {
 			log.Println("not room")
 		}
-		//c.ws.sendMessage <- &data
 		break
 	case TypeCallOffer:
 		log.Println("Type webRTC offer")
@@ -213,8 +324,15 @@ func OnWsServer(w http.ResponseWriter , r *http.Request , ws *WsServer){
 	if err != nil{
 		log.Fatal(err)
 	}
+	//connection to database
+	db,dbErr := OnConnectionDatabase()
+	if dbErr != nil{
+		log.Println("connection to database error :",db)
+	}
+	log.Print("connection to database successfully....")
+
 	//new client
-	client := onNewClient(conn,ws)
+	client := onNewClient(conn,ws,db)
 	//register
 	client.ws.register <- client
 
